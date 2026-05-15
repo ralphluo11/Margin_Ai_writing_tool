@@ -6,7 +6,7 @@ An AI-assisted writing tool that scaffolds the source-to-argument stage of acade
 
 Built for **junior academic writers** (undergraduates and early graduate students) working on lit reviews, response essays, and commentary papers.
 
-MACSS 30200 · Project C · Spring 2026 · Jiahang Luo
+CMSC 33231 · Project C · Spring 2026 · Jiahang Luo
 
 ---
 
@@ -52,16 +52,4 @@ Margin is a four-step workflow:
 
 4. **Draft** — AI stitches the assembled structure into prose, restricted to material the user has explicitly placed. An authorship trace shows what percentage is still AI-generated and what the user has added or cut.
 
----
 
-## Tech stack
-
-- **React** + **Vite** (frontend)
-- **OpenAI API** with `gpt-4o-mini` (parsing and draft generation)
-- **pdf.js** loaded via CDN (for PDF text extraction)
-
-All UI, prompt logic, and state management live in a single React component (`src/App.jsx`) to keep the prototype self-contained.
-
----
-
-## Project structure

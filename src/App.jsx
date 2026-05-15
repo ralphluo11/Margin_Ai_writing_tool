@@ -1,10 +1,33 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 
-// ============================================================
-// MARGIN — Prototype v4
-// Target: junior academic writers (undergrad / early grad)
-// Use case: lit review, commentary, source-driven essays
-// ============================================================
+// ============================================================================
+// MARGIN
+// AI-assisted writing tool for the source-to-argument stage of academic writing.
+//
+// DESIGN COMMITMENT
+//   AI is restricted to the translating sub-process of writing (Flower & Hayes,
+//   1981) — turning structured intentions into prose. Planning — deciding what
+//   each source means, where the writer stands, what they are arguing — is
+//   architecturally reserved for the user. This is enforced not by prompting
+//   alone but by the data flow: the generation step cannot inject claims,
+//   evidence, or framings the user has not explicitly placed.
+//
+// TARGET USER
+//   Junior academic writers (undergraduates, early graduate students) writing
+//   lit reviews, response essays, source-driven commentary. The design assumes
+//   procedural knowledge of source engagement without assuming meta-vocabulary
+//   for rhetorical postures.
+//
+// WORKFLOW
+//   Upload  → text-heavy source parsed into argumentative segments.
+//   Review  → segments displayed as a hierarchical skeleton; user marks
+//             segments with "+" (low-commitment attention act, not selection).
+//   Build   → user writes their take (required, no AI) and drags marked
+//             segments into stance-based slots: agree / disagree / else.
+//             Placement IS the rhetorical declaration.
+//   Draft   → LLM stitches structure into prose, restricted to placed material.
+//             Authorship trace and diff view make AI's contribution legible.
+// ============================================================================
 
 const OPENAI_ENDPOINT = '/openai/v1/chat/completions';
 const OPENAI_MODEL = 'gpt-4o-mini';
@@ -12,9 +35,18 @@ const OPENAI_MODEL = 'gpt-4o-mini';
 const MAX_INPUT_CHARS = 25000;
 const MIN_INPUT_CHARS = 200;
 
-// ----------------------------------------------------------------
-// TAG SYSTEM — 4 categories chosen for junior writers
-// ----------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ARGUMENTATIVE TAG VOCABULARY
+// A controlled vocabulary of four categories, selected as the minimum set
+// that maps onto distinctions junior writers already make implicitly when
+// summarizing a source (the author asserts X, here is what supports it,
+// they acknowledge Y, they leave Z unaddressed). Earlier prototypes used
+// seven categories including Assumption, Framing, and Background; these
+// were cut because they presupposed critical-reading skills the target
+// user is still developing. Each tag carries a distinct visual identity
+// (hue + border + label color) to support pre-attentive recognition in
+// the nested skeleton view.
+// ----------------------------------------------------------------------------
 const TAG_COLORS = {
   Claim:      { bg: '#FDECC8', border: '#D9A441', text: '#7A5217' }, // amber
   Evidence:   { bg: '#DBEDDB', border: '#4F8A4F', text: '#2A5A2A' }, // green
@@ -23,11 +55,22 @@ const TAG_COLORS = {
 };
 const ALL_TAGS = Object.keys(TAG_COLORS);
 
-// ----------------------------------------------------------------
-// SLOTS — agreement-based, replacing the earlier "type-based" slots
-// (Build-on / Position lenses are also gone — see Step 3 redesign.)
-// Each slot accepts ANY tag; placement = stance.
-// ----------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// STANCE-BASED SLOTS
+// The Build step's central interaction. Each slot represents one of three
+// rhetorical postures a writer can take toward a source segment: agreement,
+// disagreement, or some other use (context, framing, a phrase to borrow, a
+// gap to address). All slots accept any tag — type and stance are decoupled.
+//
+// The design principle is "placement is declaration": dragging a Claim into
+// "What I agree with" amounts to declaring a supportive relation toward it,
+// without requiring the user to name that relation abstractly. This collapses
+// stance metadata into the gesture itself and removes a layer of explicit
+// reasoning that earlier (type-based) versions of this step asked users to
+// perform unnecessarily. The downstream effect is that the generation prompt
+// can infer rhetorical connector phrasing ("as the source argues...", "against
+// this view...", "building on this...") from slot membership alone.
+// ----------------------------------------------------------------------------
 const SLOTS = [
   { id: 'agree',  label: 'What I agree with',
     accepts: ['Claim', 'Evidence', 'Concession', 'Gap'], multi: true,
@@ -44,6 +87,14 @@ const SLOTS = [
     requiresPurpose: true },
 ];
 
+// ----------------------------------------------------------------------------
+// HUMAN-ONLY FIELDS
+// "My take" is the single locus where Margin enforces its core architectural
+// commitment: the writer's argument is non-delegable. The field is required,
+// receives no AI suggestion, and is surfaced explicitly to users as "you
+// write this · no AI". The "voice" field is optional tone guidance passed
+// through to the generation prompt; it shapes style but never substance.
+// ----------------------------------------------------------------------------
 const FREE_TEXT_FIELDS = [
   { id: 'position', label: 'My take',
     placeholder: 'In one or two sentences, what do you want to say?' },
@@ -51,9 +102,11 @@ const FREE_TEXT_FIELDS = [
     placeholder: 'Tone, framing, or style notes — formal, conversational, skeptical, etc. (optional)' },
 ];
 
-// ----------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // DEMO SOURCE
-// ----------------------------------------------------------------
+// First-run content. Pre-tagged with parentClaimId attributions to demonstrate
+// the nested-skeleton visualization without an LLM round trip.
+// ----------------------------------------------------------------------------
 const DEMO_SOURCE = {
   title: "Why AI Writing Tools Are Quietly Hollowing Out Student Thinking",
   author: "Margaret Voss",
@@ -96,9 +149,16 @@ const DEMO_SEGMENTS = [
   { id: 's11',sectionId: 'sec6', parentClaimId: null,  primaryTag: 'Claim',      altTags: [], text: "Until AI tool designers take this distinction seriously, we should be skeptical of claims that these tools augment learning.", note: "Concluding stance" },
 ];
 
-// ----------------------------------------------------------------
-// PDF text extraction (CDN-loaded pdf.js)
-// ----------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// PDF TEXT EXTRACTION
+// pdf.js is loaded lazily from CDN on first PDF upload to keep the initial
+// bundle small. Extraction returns plain text only; document structure and
+// reading order are not preserved. Scanned (image-only) PDFs return empty
+// text, and the upload UI prompts the user to clean up the extracted text
+// before parsing — a small affordance for the consistently messy reality
+// of academic PDFs (multi-column layouts, footnotes inlined as body text,
+// page-break artifacts).
+// ----------------------------------------------------------------------------
 const PDFJS_VERSION = '4.0.379';
 let pdfjsLoadPromise = null;
 function loadPdfJs() {
@@ -146,9 +206,12 @@ async function extractPdfText(file) {
   return out.trim();
 }
 
-// ================================================================
-// MAIN COMPONENT
-// ================================================================
+// ============================================================================
+// ROOT COMPONENT
+// Holds the canonical state for all four stages of the workflow. State is
+// kept flat at this level — each child stage is a controlled view over the
+// shared model, allowing users to step backward without losing work.
+// ============================================================================
 export default function Margin() {
   const [stage, setStage] = useState('upload');     // upload | review | build | draft
   const [source, setSource] = useState(null);
@@ -156,7 +219,7 @@ export default function Margin() {
   const [sections, setSections] = useState([]);
   const [pinnedIds, setPinnedIds] = useState(new Set());
   const [skeletonState, setSkeletonState] = useState({});
-  const [purposeState, setPurposeState] = useState({}); // { segmentId: "user-typed purpose string" } — only used for "else" slot
+  const [purposeState, setPurposeState] = useState({}); // segmentId → user-typed purpose string; only the "else" slot requires one
   const [freeTexts, setFreeTexts] = useState({});
   const [draft, setDraft] = useState('');
   const [aiBaseline, setAiBaseline] = useState('');
@@ -188,7 +251,24 @@ export default function Margin() {
   const stageNumber = ({ upload: 1, review: 2, build: 3, draft: 4 })[stage];
   const stageLabel  = ({ upload: 'Upload', review: 'Read & mark', build: 'Build', draft: 'Draft' })[stage];
 
-  // Drift detection — only after substantive editing past the AI baseline
+  // --------------------------------------------------------------------------
+  // DRIFT DETECTION
+  // A metacognitive nudge, not a constraint. The check fires when the user's
+  // current draft contains less than 20% of the content-word vocabulary from
+  // their original "my take", suggesting the prose has wandered away from the
+  // declared position. The intent is to surface the divergence to the writer,
+  // not to prevent it — drift may be deliberate (they updated their thinking
+  // mid-draft) or accidental (AI's phrasing pulled them in a different
+  // direction). The warning is dismissible.
+  //
+  // Threshold tuning is intentionally conservative to avoid false positives:
+  //   - Only fires after 400 characters of writing (skips early-edit noise).
+  //   - Skips when the user's draft is still identical to the AI baseline
+  //     (no editing yet — nothing to drift from).
+  //   - Requires the user's take to have at least two content words longer
+  //     than five characters (avoids degenerate one-word takes).
+  //   - Uses content words only (length > 5) to filter out function words.
+  // --------------------------------------------------------------------------
   useEffect(() => {
     if (!draft || !freeTexts.position) { setShowDriftWarning(false); return; }
     if (draft.length < 400) { setShowDriftWarning(false); return; }
@@ -243,8 +323,6 @@ export default function Margin() {
                 else next[slotId] = [...(prev[slotId] || []).filter(id => id !== segId), segId];
                 return next;
               });
-              // No purpose needed by default — only "else" slot requires it,
-              // and we initialize lazily when user types in the field
             }}
             onRemoveSegment={(slotId, segId) => {
               setSkeletonState(prev => ({ ...prev, [slotId]: (prev[slotId] || []).filter(id => id !== segId) }));
@@ -291,9 +369,15 @@ function Header({ stageNumber, stageLabel, onReset }) {
   );
 }
 
-// ================================================================
-// STAGE 1: UPLOAD
-// ================================================================
+// ============================================================================
+// STAGE 1 · UPLOAD
+// Source ingestion + LLM parsing into argumentative segments.
+// Three input paths (demo, PDF/text upload, manual paste) preserve user
+// agency over what gets analyzed: the "edit" mode shown after extraction
+// lets users strip footnotes, headers, and reference lists before parsing.
+// The 25,000-character cap is a cost ceiling (token economics), surfaced
+// to users as upfront constraint rather than mid-parse failure.
+// ============================================================================
 function UploadView({ onLoadDemo, onParsed }) {
   const [mode, setMode] = useState('chooser');
   const [text, setText] = useState('');
@@ -337,6 +421,16 @@ function UploadView({ onLoadDemo, onParsed }) {
     if (t.length > MAX_INPUT_CHARS) { setParseError(`Capped at ${MAX_INPUT_CHARS.toLocaleString()} characters.`); return; }
     setParsing(true); setParseError(null);
 
+    // SOURCE-PARSING PROMPT
+    // The prompt combines two complementary constraint mechanisms:
+    // procedural (STEP 1–4, walking the model through a fixed sequence)
+    // and declarative (strict JSON schema, controlled vocabulary, explicit
+    // negative instructions, structural rules). Each fails differently
+    // alone: pure end-state specs produce well-formed JSON used badly;
+    // pure step-by-step instructions produce well-walked steps that fail
+    // to maintain invariants across them. Stating the same constraints
+    // both ways is redundant in the way that good engineering is
+    // redundant — it holds where either alone would leak.
     const prompt = `You are an analytical reader helping a novice academic writer (undergraduate or early graduate) understand a source they need to write about.
 
 Your job is to parse the source into a hierarchical structure that surfaces its argumentative skeleton.
@@ -398,7 +492,12 @@ ${t}`;
       let parsed;
       try { parsed = JSON.parse(content); }
       catch (e) {
-        // partial recovery
+        // Graceful degradation on truncated LLM output.
+        // When max_tokens is reached mid-response, the model emits valid
+        // JSON for early segments but cuts off the closing brackets. Rather
+        // than discarding the entire parse, we extract the largest prefix
+        // of complete segment objects and rebuild a syntactically valid
+        // wrapper. Better to surface 18 of 22 segments than to fail loudly.
         const segMatch = content.match(/"segments"\s*:\s*\[([\s\S]*)/);
         if (segMatch) {
           const lastClose = segMatch[1].lastIndexOf('}');
@@ -533,9 +632,20 @@ ${t}`;
   );
 }
 
-// ================================================================
-// STAGE 2: REVIEW — skeleton visualization with pin
-// ================================================================
+// ============================================================================
+// STAGE 2 · READ & MARK
+// Hierarchical skeleton view of the parsed source. Each section displays its
+// Claims at the top level with Evidence/Concession/Gap segments visually
+// nested beneath the Claim they serve, connected by drawn lines. The "+"
+// (pin) gesture marks a segment as a candidate for use in the writer's own
+// argument without committing to how it will be used — selection is decoupled
+// from stance, which only solidifies in Stage 3.
+//
+// AI-inferred parent-claim attributions are presented as editable rather than
+// authoritative: misattributed evidence appears under an "Unattached" header
+// in its section rather than being silently misplaced, making model
+// uncertainty visible and contestable.
+// ============================================================================
 function ReviewView({ source, segments, sections, pinnedIds, onTogglePin, onUpdateTag, onContinue }) {
   const [activeSection, setActiveSection] = useState(sections[0]?.id);
   const [editingTagId, setEditingTagId] = useState(null);
@@ -546,7 +656,10 @@ function ReviewView({ source, segments, sections, pinnedIds, onTogglePin, onUpda
     sectionRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  // For each section: claims at top, non-claims indented under their parent
+  // Build per-section render trees from the flat segment array. Each section
+  // resolves into a list of Claims (top level) with non-Claim children
+  // grouped under their attributed parent, plus an "orphans" bucket for
+  // segments whose parentClaimId could not be resolved within the section.
   const sectionSkeletons = useMemo(() => {
     return sections.map(sec => {
       const segs = segments.filter(s => s.sectionId === sec.id);
@@ -702,9 +815,15 @@ function SegmentCard({ segment, pinned, onTogglePin, editingTag, onStartEditTag,
   const colors = TAG_COLORS[segment.primaryTag] || TAG_COLORS.Claim;
   const isChild = indent > 0;
 
-  // Visual hierarchy:
-  //   - Claim (indent 0): large, filled background using tag color, prominent
-  //   - Child (indent 1+): smaller, indented, with vertical connector line on the left
+  // Two-tier visual hierarchy. Claims receive a filled tag-colored
+  // background and heavier typography; children appear in unfilled cards,
+  // indented and connected to their parent with hairlines. The styling
+  // difference is intentionally large — argumentative structure becomes
+  // legible at a glance, before the reader has parsed any segment text.
+  // This addresses a recurring observation from formative sessions: novice
+  // writers often understand individual sentences without recognizing how
+  // they relate, and benefit when structure is signaled spatially rather
+  // than only typographically.
   const cardStyle = isChild ? {
     marginLeft: 56,
     marginBottom: 6,
@@ -803,9 +922,22 @@ function SegmentCard({ segment, pinned, onTogglePin, editingTag, onStartEditTag,
   );
 }
 
-// ================================================================
-// STAGE 3: BUILD — universal slots + relations + position
-// ================================================================
+// ============================================================================
+// STAGE 3 · BUILD
+// The user composes the argument's skeleton by writing their take (in a
+// human-only field), then dragging marked segments into one of three
+// stance-based slots. The slot a segment lands in is itself the rhetorical
+// declaration — there are no separate stance dropdowns or relation menus.
+// The "Something else" slot requires a brief purpose annotation per segment;
+// the other two slots infer purpose from placement alone.
+//
+// Library on the left shows only pinned segments by default (the user's
+// own filtered set from Stage 2), with an explicit "show all" toggle for
+// cases where the user reconsiders mid-build. Mis-matched drops (e.g., a
+// non-Claim into a Claim-only slot, in earlier versions) trigger a brief
+// shake animation rather than a silent reject, surfacing the affordance
+// boundary without an error dialog.
+// ============================================================================
 function BuildView({ segments, sections, pinnedIds, skeletonState, purposeState, freeTexts, onDropSegment, onRemoveSegment, onUpdatePurpose, onUpdateFreeText, onBack, onContinue }) {
   const [draggedSeg, setDraggedSeg] = useState(null);
   const [shakeSlot, setShakeSlot] = useState(null);
@@ -835,7 +967,9 @@ function BuildView({ segments, sections, pinnedIds, skeletonState, purposeState,
 
   const positionFilled = !!(freeTexts.position && freeTexts.position.trim().length > 10);
   const hasAtLeastOneSegment = usedSegmentIds.size > 0;
-  // "else" slot requires a purpose string for each segment placed in it
+  // Continuation guard: every segment placed in the "else" slot needs an
+  // accompanying purpose annotation, since the slot does not carry stance
+  // information by placement alone (unlike agree/disagree).
   const elseSegIds = skeletonState['else'] || [];
   const allElsePurposesSet = elseSegIds.every(id => (purposeState[id] || '').trim().length >= 3);
 
@@ -1054,9 +1188,21 @@ function FreeTextField({ field, value, onChange, emphasized }) {
   );
 }
 
-// ================================================================
-// STAGE 4: DRAFT
-// ================================================================
+// ============================================================================
+// STAGE 4 · DRAFT
+// LLM generation, edit affordance, and authorship-trace instrumentation.
+// The prompt is constructed entirely from user-placed material (Stage 3
+// state) plus the user's take and optional voice notes; the model receives
+// no part of the source it was not explicitly given. After generation, the
+// user-edited draft is diffed against the original AI baseline to compute
+// the authorship trace shown in the sidebar.
+// ============================================================================
+
+// Word-level diff between AI baseline and the user's current draft.
+// Implementation is standard longest-common-subsequence with backtracking
+// over whitespace-preserving tokens. Output is a list of { type, text }
+// segments where type ∈ { unchanged, added, deleted }, used to render the
+// color-coded diff view and to compute the authorship-trace percentages.
 function computeDiff(baseline, current) {
   if (!baseline) return [{ type: 'added', text: current }];
   const a = baseline.split(/(\s+)/);
@@ -1081,6 +1227,16 @@ function computeDiff(baseline, current) {
 function DraftView({ segments, skeletonState, purposeState, freeTexts, draft, setDraft, aiBaseline, setAiBaseline, hasGeneratedDraft, setHasGeneratedDraft, showDriftWarning, dismissDrift, aiBusy, setAiBusy, generationError, setGenerationError, onBack }) {
   const [showDiffView, setShowDiffView] = useState(false);
 
+  // DRAFT-GENERATION PROMPT
+  // Architectural enforcement of Margin's core commitment: the model
+  // receives only what the user has placed, framed by the user's own take,
+  // with explicit prohibitions on adding new claims, evidence, or framings.
+  // A connector-mapping table tells the model how to phrase based on slot
+  // membership (supportive language for "agree", contrastive for "disagree"),
+  // and an instruction to surface (rather than smooth over) structural gaps
+  // resists the model's default tendency toward fluent coherence at the
+  // expense of fidelity. Temperature is set lower than typical at the call
+  // site (0.5) to further dampen the same tendency.
   const buildPrompt = () => {
     const slotInfo = SLOTS.map(slot => {
       const segIds = skeletonState[slot.id] || [];
@@ -1343,9 +1499,15 @@ function Stat({ label, value }) {
   );
 }
 
-// ================================================================
-// SHARED
-// ================================================================
+// ============================================================================
+// LAYOUT PRIMITIVES
+// Small components shared across stages. SectionIntro provides consistent
+// top-of-stage typography (eyebrow / title / body) so each stage is
+// recognizable as a member of the same family. ContinueRow standardizes
+// the bottom-of-stage progression affordance with inline validation
+// messaging — guards are surfaced in red prose above the button rather
+// than as modal errors.
+// ============================================================================
 function SectionIntro({ eyebrow, title, body, rightAction }) {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 32, flexWrap: 'wrap' }}>
