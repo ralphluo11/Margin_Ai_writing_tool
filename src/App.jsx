@@ -4,18 +4,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 // MARGIN — Prototype v4
 // Target: junior academic writers (undergrad / early grad)
 // Use case: lit review, commentary, source-driven essays
-//
-// Major changes from v3.2:
-//   - Lens selection removed (the Build-on / Position distinction
-//     proved to be vocabulary novices don't have). Replaced with
-//     three universal slots that work regardless of stance.
-//   - Tag vocabulary reduced from 7 to 4 (Claim/Evidence/Concession/Gap)
-//   - Step 2 redesigned: skeleton visualization grouped by section,
-//     with evidence/concession/gap indented under their parent claim
-//   - "+" pin mechanic added: Step 2 marks segments;
-//     Step 3 library shows only pinned ones by default
-//   - Steps 4a (Place) + 4b (Relate) merged into a single Step 3 (Build)
-//   - Total flow: 5 steps → 4 steps
 // ============================================================
 
 const OPENAI_ENDPOINT = '/openai/v1/chat/completions';
